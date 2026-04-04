@@ -7,7 +7,7 @@ cd nanochat
 ```
 
 ### 2. Download the Dataset
-Download the default ClimbMix dataset with 4 parallel workers:
+Download the default ClimbMix dataset with 4 files n is for number of files:
 ```bash
 python -m nanochat.dataset -n 4
 ```
@@ -87,7 +87,18 @@ NANOCHAT_DTYPE=float16 python -m scripts.chat_cli -p "hello"
 - **`bfloat16`**: Best for modern GPUs (SM 8.0+, e.g., A100, H100)
 - **`float16`**: For older GPUs (SM 7.5, e.g., RTX 2080)
 
-### Model Depths
-- `--depth=1`: ~50M parameters
-- `--depth=4`: ~200M parameters
-- `--depth=12`: ~600M parameters
+
+### Token requirements
+  | Model | Total Parameters | Optimal Training Tokens |
+  |-------|------------------|-------------------------|
+  | d4    | 36.7M            | 0.13B tokens (~130M)    |
+  | d6    | 73.5M            | 0.25B tokens (~250M)    |
+  | d8    | 125.8M           | 0.43B tokens (~430M)    |
+  | d10   | 196.0M           | 0.69B tokens (~690M)    |
+  | d12   | 286.3M           | 1.07B tokens (~1.07B)   |
+  | d18   | 701.9M           | 3.03B tokens (~3.03B)   |
+  | d26   | 1.68B            | 8.43B tokens (~8.43B)   |
+
+
+
+### Baseline Core Metric
