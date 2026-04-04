@@ -112,8 +112,9 @@ def muon_step_fused(
     momentum_buffer.lerp_(stacked_grads, 1 - momentum)
     g = stacked_grads.lerp_(momentum_buffer, momentum)
 
-    # Polar express
-    X = g.to(COMPUTE_DTYPE)
+    # Polar express    
+    # Cast to bf16 for speed when available; skip cast otherwise (fp16 is unstable here due to limited exponent range)
+    X = g.bfloat16() if COMPUTE_DTYPE == torch.bfloat16 else g
     X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.01 + 1e-6)
     if g.size(-2) > g.size(-1): # Tall matrix
         for a, b, c in polar_express_coeffs[:ns_steps]:
