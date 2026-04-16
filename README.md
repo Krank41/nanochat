@@ -68,9 +68,7 @@ curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl \
     https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # Run SFT
-python -m scripts.chat_sft \
-    --device-batch-size=4 \
-    --model-tag="d4" \
+python -m scripts.chat_sft --device-batch-size=4 --model-tag="d12enhn" \
     --model-step=<your-checkpoint-step>
 ```
 

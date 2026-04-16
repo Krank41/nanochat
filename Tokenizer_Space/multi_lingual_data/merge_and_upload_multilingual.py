@@ -7,7 +7,9 @@ This script:
 3. Optionally shuffles the shard order for better mixing
 4. Prepares for HuggingFace upload
 
-export HF_TOKEN=''
+
+ export HF_TOKEN=''
+
  python merge_and_upload_multilingual.py --strategy random  --upload --repo-id "karana657/multilingual-nanochat"
 
 

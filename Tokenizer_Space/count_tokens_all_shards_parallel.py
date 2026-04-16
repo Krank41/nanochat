@@ -5,6 +5,7 @@ This script uses multiprocessing to analyze multiple shards in parallel for fast
 python count_tokens_all_shards_parallel.py --workers 8
 python count_tokens_all_shards_parallel.py --quick --tokenizer-type  sarvam
 python count_tokens_all_shards_parallel.py --workers 8  --tokenizer-type  custom
+python count_tokens_all_shards_parallel.py --workers 8  --tokenizer-type  sarvam --data-dir /home/krank/.cache/nanochat/base_data_hindienglishmix/
 """
 
 import os
