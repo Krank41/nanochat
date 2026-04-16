@@ -15,8 +15,10 @@ python -m nanochat.dataset -n 4
 ### 3. Train Custom Tokenizer
 Train a tokenizer on your dataset:
 ```bash
-python -m scripts.tok_train
+python -m scripts.tok_train --tokenizer-type sentencepiece
 ```
+
+
 
 ## 🎯 Training
 
@@ -27,11 +29,14 @@ Train a base model with configurable depth and batch size. Supports both `float1
 **Float16 Training (for older GPUs like RTX 2080):**
 ```bash
 NANOCHAT_DTYPE=float16 python -m scripts.base_train \
-    --depth=4 \
+    --depth=6 \
     --device-batch-size=8 \
+    --core-metric-every=-1 \
     --max-seq-len=512 \
-    --model-tag="d4"
+    --model-tag="d6"
 ```
+
+
 
 **BFloat16 Training (for newer GPUs like A100):**
 ```bash
@@ -40,6 +45,16 @@ NANOCHAT_DTYPE=bfloat16 python -m scripts.base_train \
     --device-batch-size=8 \
     --max-seq-len=512 \
     --model-tag="d4"
+```
+
+```bash
+NANOCHAT_DTYPE=float16 python -m scripts.base_train     --depth=12     --device-batch-size=4     --core-metric-every=-1     --max-seq-len=1024     --model-tag="d12enhn"
+```
+
+
+### Checking Base Model Generations
+```bash
+python -m scripts.test_hindi_generation --model-tag d12enhn
 ```
 
 ### Supervised Fine-Tuning (SFT)
@@ -67,7 +82,8 @@ Evaluate your model on core benchmarks:
 python -m scripts.base_eval \
     --device-batch-size=1 \
     --eval core \
-    --max-per-task=100
+    --max-per-task=100 \
+    --model-tag d12enhn
 ```
 
 ## 💬 Interactive Chat

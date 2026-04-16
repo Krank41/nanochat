@@ -385,14 +385,321 @@ class RustBPETokenizer:
         return ids
 
 # -----------------------------------------------------------------------------
+# Tokenizer based on SentencePiece for multilingual support
+import tempfile
+
+class SentencePieceTokenizer:
+    """Wrapper around SentencePiece for NanoChat compatibility with multilingual support"""
+
+    def __init__(self, sp_model, model_path=None):
+        self.sp = sp_model
+        self.original_model_path = model_path
+        # Cache special token IDs
+        self._special_tokens = {}
+        for token in SPECIAL_TOKENS:
+            token_id = self.sp.piece_to_id(token)
+            if token_id != self.sp.unk_id():  # Valid token
+                self._special_tokens[token] = token_id
+
+        # Get BOS token ID - try our custom one first, then fall back to default
+        self.bos_token_id = self._special_tokens.get("<|bos|>", self.sp.bos_id())
+
+    @classmethod
+    def train_from_iterator(cls, text_iterator, vocab_size):
+        """Train a SentencePiece tokenizer from text iterator, similar to RustBPE"""
+        import sentencepiece as spm
+
+        # Write text data to temporary file (SentencePiece requires file input)
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', delete=False, suffix='.txt') as temp_file:
+            temp_path = temp_file.name
+            doc_count = 0
+            for text in text_iterator:
+                # Clean and write each document
+                if isinstance(text, str) and text.strip():
+                    clean_text = text.strip().replace('\n', ' ').replace('\r', ' ')
+                    temp_file.write(clean_text + '\n')
+                    doc_count += 1
+                    if doc_count % 10000 == 0:
+                        print(f"Processing documents: {doc_count}")
+
+        print(f"Training SentencePiece on {doc_count} documents...")
+
+        # Create temporary model prefix
+        model_prefix = tempfile.mktemp(prefix='sp_model_')
+
+        # Define special tokens string for SentencePiece
+        special_tokens_str = ','.join(SPECIAL_TOKENS)
+
+        # Train SentencePiece model
+        # Note: Cannot exactly match RustBPE's token arrangement (0-255 as bytes)
+        # but functionally equivalent for encoding/decoding
+
+        # SentencePiece adds user_defined_symbols to vocab_size, so we need to account for that
+        # If we want total vocab_size=32768 with 9 special tokens, we train with 32768
+        # The special tokens will be added on top (making actual vocab larger)
+        # But to match RustBPE behavior, we reduce vocab_size by special tokens count
+        vocab_size_for_training = vocab_size - len(SPECIAL_TOKENS) + 1  # +1 for <unk>
+
+        train_args = (
+            f"--input={temp_path} "
+            f"--model_prefix={model_prefix} "
+            f"--vocab_size={vocab_size_for_training} "
+            f"--model_type=bpe "
+            f"--character_coverage=0.9995 "
+            f"--max_sentence_length=16384 "
+            f"--pad_id=-1 --unk_id=0 --bos_id=-1 --eos_id=-1 "
+            f"--unk_piece=<unk> "
+            f"--user_defined_symbols={special_tokens_str} "
+            f"--shuffle_input_sentence=true "
+            f"--num_threads=4"
+        )
+
+        spm.SentencePieceTrainer.train(train_args)
+
+        # Clean up temp text file
+        os.unlink(temp_path)
+
+        # Load the trained model
+        model_path = f"{model_prefix}.model"
+        sp = spm.SentencePieceProcessor()
+        sp.load(model_path)
+
+        print(f"SentencePiece training complete. Vocab size: {sp.get_piece_size()}")
+
+        return cls(sp, model_path)
+
+    @classmethod
+    def from_file(cls, model_path):
+        import sentencepiece as spm
+        sp = spm.SentencePieceProcessor()
+        sp.load(model_path)
+        return cls(sp, model_path)
+
+    @classmethod
+    def from_directory(cls, tokenizer_dir):
+        # Try to find SentencePiece model file
+        possible_names = [
+            "nanochat_compatible_tokenizer.model",
+            "tokenizer.model",
+            "sentencepiece.model"
+        ]
+        for name in possible_names:
+            model_path = os.path.join(tokenizer_dir, name)
+            if os.path.exists(model_path):
+                return cls.from_file(model_path)
+        raise FileNotFoundError(f"No SentencePiece model found in {tokenizer_dir}")
+
+    def get_vocab_size(self):
+        return self.sp.get_piece_size()
+
+    def get_special_tokens(self):
+        return set(self._special_tokens.keys())
+
+    def id_to_token(self, id):
+        return self.sp.id_to_piece(id)
+
+    @lru_cache(maxsize=32)
+    def encode_special(self, text):
+        """Encode a special token - CRITICAL for chat rendering"""
+        if text in self._special_tokens:
+            return self._special_tokens[text]
+        # Try to get the token ID directly
+        token_id = self.sp.piece_to_id(text)
+        if token_id != self.sp.unk_id():
+            return token_id
+        return None
+
+    def get_bos_token_id(self):
+        return self.bos_token_id
+
+    def encode(self, text, prepend=None, append=None, num_threads=8):
+        """Encode text with optional prepend/append tokens"""
+        if prepend is not None:
+            prepend_id = prepend if isinstance(prepend, int) else self.encode_special(prepend)
+        if append is not None:
+            append_id = append if isinstance(append, int) else self.encode_special(append)
+
+        if isinstance(text, str):
+            ids = self.sp.encode_as_ids(text)
+            if prepend is not None:
+                ids.insert(0, prepend_id)
+            if append is not None:
+                ids.append(append_id)
+        elif isinstance(text, list):
+            # Batch encoding
+            ids = []
+            for t in text:
+                text_ids = self.sp.encode_as_ids(t)
+                if prepend is not None:
+                    text_ids.insert(0, prepend_id)
+                if append is not None:
+                    text_ids.append(append_id)
+                ids.append(text_ids)
+        else:
+            raise ValueError(f"Invalid input type: {type(text)}")
+
+        return ids
+
+    def __call__(self, *args, **kwargs):
+        return self.encode(*args, **kwargs)
+
+    def decode(self, ids):
+        # SentencePiece decode handles special tokens automatically
+        # Important: decode_ids is the correct method for exact decoding
+        if isinstance(ids, list):
+            return self.sp.decode_ids(ids)
+        else:
+            return self.sp.decode_ids([ids])
+
+    def save(self, tokenizer_dir):
+        os.makedirs(tokenizer_dir, exist_ok=True)
+        model_path = os.path.join(tokenizer_dir, "nanochat_compatible_tokenizer.model")
+
+        # If we have the original model path, copy it
+        if self.original_model_path and os.path.exists(self.original_model_path):
+            import shutil
+            shutil.copy(self.original_model_path, model_path)
+            # Also save the vocab if it exists
+            vocab_src = self.original_model_path.replace('.model', '.vocab')
+            if os.path.exists(vocab_src):
+                vocab_dst = os.path.join(tokenizer_dir, "nanochat_compatible_tokenizer.vocab")
+                shutil.copy(vocab_src, vocab_dst)
+            print(f"Saved tokenizer model to {model_path}")
+        else:
+            # If no original path, we need to serialize the current model
+            # SentencePiece doesn't support direct serialization, so we error
+            raise ValueError("Cannot save SentencePiece model without original model path")
+
+    def render_conversation(self, conversation, max_tokens=2048):
+        """
+        Tokenize a single Chat conversation (which we call a "doc" or "document" here).
+        Returns:
+        - ids: list[int] is a list of token ids of this rendered conversation
+        - mask: list[int] of same length, mask = 1 for tokens that the Assistant is expected to train on.
+        """
+        # ids, masks that we will return and a helper function to help build them up.
+        ids, mask = [], []
+        def add_tokens(token_ids, mask_val):
+            if isinstance(token_ids, int):
+                token_ids = [token_ids]
+            ids.extend(token_ids)
+            mask.extend([mask_val] * len(token_ids))
+
+        # sometimes the first message is a system message...
+        # => just merge it with the second (user) message
+        if conversation["messages"][0]["role"] == "system":
+            # some conversation surgery is necessary here for now...
+            conversation = copy.deepcopy(conversation) # avoid mutating the original
+            messages = conversation["messages"]
+            assert messages[1]["role"] == "user", "System message must be followed by a user message"
+            messages[1]["content"] = messages[0]["content"] + "\n\n" + messages[1]["content"]
+            messages = messages[1:]
+        else:
+            messages = conversation["messages"]
+        assert len(messages) >= 1, f"Conversation has less than 1 message: {messages}"
+
+        # fetch all the special tokens we need
+        bos = self.get_bos_token_id()
+        user_start, user_end = self.encode_special("<|user_start|>"), self.encode_special("<|user_end|>")
+        assistant_start, assistant_end = self.encode_special("<|assistant_start|>"), self.encode_special("<|assistant_end|>")
+        python_start, python_end = self.encode_special("<|python_start|>"), self.encode_special("<|python_end|>")
+        output_start, output_end = self.encode_special("<|output_start|>"), self.encode_special("<|output_end|>")
+
+        # now we can tokenize the conversation
+        add_tokens(bos, 0)
+        for i, message in enumerate(messages):
+
+            # some sanity checking here around assumptions, to prevent footguns
+            must_be_from = "user" if i % 2 == 0 else "assistant"
+            assert message["role"] == must_be_from, f"Message {i} is from {message['role']} but should be from {must_be_from}"
+
+            # content can be either a simple string or a list of parts (e.g. containing tool calls)
+            content = message["content"]
+
+            if message["role"] == "user":
+                assert isinstance(content, str), "User messages are simply expected to be strings"
+                value_ids = self.encode(content)
+                add_tokens(user_start, 0)
+                add_tokens(value_ids, 0)
+                add_tokens(user_end, 0)
+            elif message["role"] == "assistant":
+                add_tokens(assistant_start, 0)
+                if isinstance(content, str):
+                    # simple string => simply add the tokens
+                    value_ids = self.encode(content)
+                    add_tokens(value_ids, 1)
+                elif isinstance(content, list):
+                    for part in content:
+                        value_ids = self.encode(part["text"])
+                        if part["type"] == "text":
+                            # string part => simply add the tokens
+                            add_tokens(value_ids, 1)
+                        elif part["type"] == "python":
+                            # python tool call => add the tokens inside <|python_start|> and <|python_end|>
+                            add_tokens(python_start, 1)
+                            add_tokens(value_ids, 1)
+                            add_tokens(python_end, 1)
+                        elif part["type"] == "python_output":
+                            # python output => add the tokens inside <|output_start|> and <|output_end|>
+                            # none of these tokens are supervised because the tokens come from Python at test time
+                            add_tokens(output_start, 0)
+                            add_tokens(value_ids, 0)
+                            add_tokens(output_end, 0)
+                        else:
+                            raise ValueError(f"Unknown part type: {part['type']}")
+                else:
+                    raise ValueError(f"Unknown content type: {type(content)}")
+                add_tokens(assistant_end, 1)
+
+        # truncate to max_tokens tokens MAX (helps prevent OOMs)
+        ids = ids[:max_tokens]
+        mask = mask[:max_tokens]
+        return ids, mask
+
+    def visualize_tokenization(self, ids, mask, with_token_id=False):
+        """Small helper function useful in debugging: visualize the tokenization of render_conversation"""
+        RED = '\033[91m'
+        GREEN = '\033[92m'
+        RESET = '\033[0m'
+        GRAY = '\033[90m'
+        tokens = []
+        for i, (token_id, mask_val) in enumerate(zip(ids, mask)):
+            token_str = self.decode([token_id])
+            color = GREEN if mask_val == 1 else RED
+            tokens.append(f"{color}{token_str}{RESET}")
+            if with_token_id:
+                tokens.append(f"{GRAY}({token_id}){RESET}")
+        return '|'.join(tokens)
+
+    def render_for_completion(self, conversation):
+        """
+        Used during Reinforcement Learning. In that setting, we want to
+        render the conversation priming the Assistant for a completion.
+        Unlike the Chat SFT case, we don't need to return the mask.
+        """
+        # We have some surgery to do: we need to pop the last message (of the Assistant)
+        conversation = copy.deepcopy(conversation) # avoid mutating the original
+        messages = conversation["messages"]
+        assert messages[-1]["role"] == "assistant", "Last message must be from the Assistant"
+        messages.pop() # remove the last message (of the Assistant) inplace
+
+        # Now tokenize the conversation
+        ids, mask = self.render_conversation(conversation)
+
+        # Finally, to prime the Assistant for a completion, append the Assistant start token
+        assistant_start = self.encode_special("<|assistant_start|>")
+        ids.append(assistant_start)
+        return ids
+
+# -----------------------------------------------------------------------------
 # nanochat-specific convenience functions
 
 def get_tokenizer():
     from nanochat.common import get_base_dir
     base_dir = get_base_dir()
     tokenizer_dir = os.path.join(base_dir, "tokenizer")
-    # return HuggingFaceTokenizer.from_directory(tokenizer_dir)
-    return RustBPETokenizer.from_directory(tokenizer_dir)
+    # Only use SentencePiece tokenizer
+    return SentencePieceTokenizer.from_directory(tokenizer_dir)
 
 def get_token_bytes(device="cpu"):
     import torch
